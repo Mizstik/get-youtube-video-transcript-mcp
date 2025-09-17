@@ -4,9 +4,11 @@ This is an MCP server which grabs transcripts/subtitles as well as the title fro
 
 # Installation
 
+```
 git clone https://github.com/Mizstik/get-youtube-video-transcript-mcp.git
 cd get-youtube-video-transcript-mcp
 npm install
+```
 
 Then grab the yt-dlp executable from https://github.com/yt-dlp/yt-dlp/releases and place it in the cloned directory (where main.js is).
 
