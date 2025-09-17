@@ -1,0 +1,17 @@
+{
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.18.0",
+    "zod": "^3.25.76"
+  },
+  "name": "get-youtube-video-transcript-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for getting transcript/subtitles from youtube videos using yt-dlp",
+  "type": "module",
+  "main": "main.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": ["mcp", "youtube", "yt-dlp", "transcript", "subtitle", "video"],
+  "author": "Mizstik",
+  "license": "MIT"
+}
