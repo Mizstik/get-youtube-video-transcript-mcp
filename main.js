@@ -112,6 +112,41 @@ async function fetch_title(video_id) {
 }
 
 
+server.registerTool(
+  "update-yt-dlp",
+  {
+    title: "Update yt-dlp",
+    description: "Update the underlying yt-dlp executable.",
+    inputSchema: {
+    }
+  },
+  async () => ({
+    content: [{
+      type: "text",
+      text: await update_ytdlp()
+    }]
+  })
+)
+
+async function update_ytdlp() {
+  return new Promise((resolve, reject) => {
+    const command = `${__dirname}\\yt-dlp --update`
+    exec(command, (error, stdout, stderr) => {
+      if (error) {
+        reject(error)
+      } else {
+        resolve(stdout.trim())
+      }
+    })
+  })
+}
+
+
+
+
+
+
+
 
 const transport = new StdioServerTransport()
 server.connect(transport)
