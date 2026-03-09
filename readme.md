@@ -12,6 +12,11 @@ npm install
 
 Then grab the yt-dlp executable from https://github.com/yt-dlp/yt-dlp/releases and place it in the cloned directory (where main.js is).
 
+Starting with yt-dlp's 2025-11-12 release, you will also need to install Deno:
+```
+winget install deno
+```
+
 Then add the following to the MCP config of your LLM frontend:
 
     "get-youtube-video-transcript-mcp": {
