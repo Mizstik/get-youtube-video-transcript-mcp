@@ -15,6 +15,14 @@ const ytDlpPath = path.join(__dirname, os.platform() === 'win32' ? 'yt-dlp.exe' 
 import fs from "fs/promises"
 import http from "http"
 
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
+}
+
 const server = new McpServer({
   name: "Get Youtube Video Title and Subtitle",
   version: "1.2.0"
@@ -228,6 +236,14 @@ function serve_http(port=12001) {
         }
       } else {
         console.log(`${timestamp} ${req.method} ${req.url}`)
+      }
+      const originalEnd = res.end.bind(res)
+      res.end = function (chunk, ...args) {
+        if (chunk) {
+          const size = Buffer.isBuffer(chunk) ? chunk.byteLength : Buffer.byteLength(chunk)
+          console.log(`Response size: ${formatBytes(size)}`)
+        }
+        return originalEnd(chunk, ...args)
       }
       await transport.handleRequest(req, res, parsedBody)
     } else {
