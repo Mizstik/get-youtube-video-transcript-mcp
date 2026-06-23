@@ -2,22 +2,23 @@
 
 This is an MCP server which grabs transcripts/subtitles as well as the title from YouTube videos using yt-dlp.
 
-# Installation
+This version has merged both the stdio and http-streamable transports into one codebase, selectable by command-line.
 
+# Installation
 ```
 git clone https://github.com/Mizstik/get-youtube-video-transcript-mcp.git
 cd get-youtube-video-transcript-mcp
 npm install
 ```
 
-Then grab the yt-dlp executable from https://github.com/yt-dlp/yt-dlp/releases and place it in the cloned directory (where main.js is).
-
-Starting with yt-dlp's 2025-11-12 release, you will also need to install Deno:
+You also need ffmpeg on the same system where this MCP will run:
 ```
-winget install deno
+winget install ffmpeg
 ```
+ffmpeg is required in order to convert subtitles into a more compact format and for deduplication of subtitle lines. The MCP will not function without it.
 
-Then add the following to the MCP config of your LLM frontend:
+## stdio transport
+Some desktop frontends, like LM Studio, prefer MCPs with stdio transport. To add this MCP to the frontend, add the following to the MCP config file. (In LMS, this is "Edit mcp.json" in the Integration sidebar, in the Install button.)
 
     "get-youtube-video-transcript-mcp": {
       "command": "node",
@@ -26,8 +27,58 @@ Then add the following to the MCP config of your LLM frontend:
       ]
     }
 
-Afterward, any model trained on tool-calling can make use of the tool.
+When main.js is executed with no command line arguments, it will operate in stdio mode. The LLM frontend will execute this for you automatically when needed and there is no resident process or server running.
+
+## streamable http
+Some frontends, particularly server-based ones such as OpenWebUI, prefer MCPs with streamable http transport.
+
+First, start the MCP http server with the --http argument. Port can be omitted which will default to 12001.
+```
+node main.js --http --port=12001
+
+MCP server listening on port 12001
+```
+This will start the server and it's intended to be kept running indefinitely, in order to listen and respond to frontend requests. Do not close the terminal or command line box where this is running.
+
+On the frontend, add the integration with a URL to the machine where the MCP is running, making sure to add the http:// prefix and append the port and the /mcp path. Example:
+```
+http://192.168.8.120:12001/mcp
+```
+
+Example in OpenWebUI:
+![screenshot](https://github.com/Mizstik/mizstik.github.io/blob/master/OWUI_Screenshot_20260623_082822.png?raw=true)
+
+### Note for OpenWebUI
+You will need to add this in the *Admin Panel*. Adding the mcp in user options will fail silently, as of OWUI 0.9.
+
+Be sure to change the "Type" at the top from OpenAPI to MCP Streamable HTTP. Change the auth to None.
+
+# Initialize yt-dlp
+You need to first download yt-dlp before the MCP can fetch subtitles. You can order the LLM to do this for you by having it call the "initialize-yt-dlp" tool from this mcp.
+
+Simply saying "initialize yt-dlp" in the chat interface will often be enough, if the model was trained in tool calling. Models as small as Gemma-4-E4B are capable of doing so.
+
+![screenshot](https://github.com/Mizstik/mizstik.github.io/blob/master/initialize-yt-dlp-Screenshot_20260623_085212.png?raw=true)
+
+Afterward, the MCP will be able to fetch subtitles from youtube videos.
+
+If this fails, you can manually download the yt-dlp executable from https://github.com/yt-dlp/yt-dlp/releases and place it in the mcp's cloned directory (where main.js is).
+
+After you're done initializing, you can disable this tool by unticking the box next to "initialize-yt-dlp" in the tool list to declutter the context.
+
+# Updating yt-dlp
+yt-dlp needs to be updated usually around every 3-6 months to keep up with youtube's countermeasures. The MCP includes a tool that allows you to order an update via LLM, using the "update-yt-dlp" tool.
+
+![screenshot](https://github.com/Mizstik/mizstik.github.io/blob/master/update-yt-dlp-Screenshot_20260623_084506.png?raw=true)
+
+When you do not need to update, you can also disable the tool in your frontend to avoid cluttering the context.
+
+# Example Screenshots
 
 ![screenshot](https://github.com/Mizstik/mizstik.github.io/blob/master/get-youtube-title-screenshot.png?raw=true)
 
 ![screenshot](https://github.com/Mizstik/mizstik.github.io/blob/master/get-youtube-transcript-screenshot.png?raw=true)
+
+Note that the mcp is also capable of downloading user comments below the video:
+
+![screenshot](https://github.com/Mizstik/mizstik.github.io/blob/master/comments_Screenshot_20260623_090550.jpg?raw=true)
