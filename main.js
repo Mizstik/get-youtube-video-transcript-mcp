@@ -2,9 +2,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { z } from "zod"
-import { exec } from "child_process"
+import { execFile } from "child_process"
 import { promisify } from "util"
-const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
 
 import path from "path"
 import { fileURLToPath } from 'url'
@@ -14,6 +14,10 @@ const ytDlpPath = path.join(__dirname, os.platform() === 'win32' ? 'yt-dlp.exe' 
 
 import fs from "fs/promises"
 import http from "http"
+
+const YOUTUBE_VIDEO_ID_REGEX = /^[a-zA-Z0-9_-]{11}$/
+const VALID_SORT_OPTIONS = ['top', 'newest']
+const VALID_LANG_CODES = /^[a-zA-Z]{2,3}(-[a-zA-Z]{2,3})?$/
 
 function formatBytes(bytes) {
   if (bytes === 0) return '0 B'
@@ -28,16 +32,14 @@ const server = new McpServer({
   version: "1.2.0"
 })
 
-
-
 server.registerTool(
   "get-youtube-video-transcript-and-title",
   {
     title: "Get Youtube Video Transcript and Title",
     description: "Get transcript and title from a youtube video",
     inputSchema: {
-      video_id: z.string(),
-      lang: z.string()
+      video_id: z.string().regex(YOUTUBE_VIDEO_ID_REGEX, "Invalid YouTube video ID format"),
+      lang: z.string().regex(VALID_LANG_CODES, "Invalid language code format")
     }
   },
   async ({video_id, lang}) => ({
@@ -49,42 +51,55 @@ server.registerTool(
 )
 
 async function fetch_subtitle(video_id, lang="en") {
-  const files_pre = await fs.readdir(__dirname)
-  for (const file of files_pre) {
-    if (file.endsWith('.lrc')) {
-      await fs.unlink(path.join(__dirname, file))
+  const outputDir = __dirname
+  const safeOutputPath = path.join(outputDir, '%(id)s.%(ext)s')
+
+  const args = [
+    '--skip-download',
+    '--write-subs',
+    '--write-auto-subs',
+    '--sub-langs', lang,
+    '--convert-subs', 'lrc',
+    '-o', safeOutputPath,
+    video_id
+  ]
+
+  try {
+    await execFileAsync(ytDlpPath, args, { maxBuffer: 10 * 1024 * 1024 })
+  } catch (err) {
+    if (err.stderr) {
+      console.error('yt-dlp stderr:', err.stderr)
     }
+    return "Error fetching subtitle: " + (err.message || 'Unknown error occurred')
   }
 
-  const command = `"${ytDlpPath}" --skip-download --write-subs --write-auto-subs --sub-langs ${lang} --convert-subs lrc -o "${path.join(__dirname, '%(title)s')}" "${video_id}"`
-  await execAsync(command)
-
-  const files = await fs.readdir(__dirname)
+  const files = await fs.readdir(outputDir)
   const lrcFile = files.find(file => file.endsWith('.lrc'))
   if (!lrcFile) return "No transcript available."
 
-  let subtitleContent = await fs.readFile(path.join(__dirname, lrcFile), 'utf-8')
-  subtitleContent = subtitleContent.replace(/\\h/g, '').replace(/>> /g, '')
-  let lines = subtitleContent.split('\n')
+  try {
+    let subtitleContent = await fs.readFile(path.join(outputDir, lrcFile), 'utf-8')
+    subtitleContent = subtitleContent.replace(/\\h/g, '').replace(/>> /g, '')
+    let lines = subtitleContent.split('\n')
 
-  let seen = new Set()
-  let final = []
-  final.push("title: " + lrcFile.slice(0, -7) + "\n\n")
+    let seen = new Set()
+    let final = []
+    final.push("title: " + lrcFile.slice(0, -7) + "\n\n")
 
-  lines.forEach((line, index) => {
-    let text = line.split("]", 2)[1]
-    if (!seen.has(text)) {
-      seen.add(text)
-      final.push(line)
-    }
-  })
+    lines.forEach((line) => {
+      let text = line.split("]", 2)[1]
+      if (!seen.has(text)) {
+        seen.add(text)
+        final.push(line)
+      }
+    })
 
-  await fs.unlink(path.join(__dirname, lrcFile))
-  return final.join(' ')
+    await fs.unlink(path.join(outputDir, lrcFile))
+    return final.join(' ')
+  } catch (err) {
+    return "Error reading subtitle: " + (err.message || 'Unknown error occurred')
+  }
 }
-
-
-
 
 server.registerTool(
   "get-youtube-video-comments",
@@ -92,9 +107,9 @@ server.registerTool(
     title: "Get Youtube Video Comments",
     description: "Get comments from a youtube video",
     inputSchema: {
-      video_id: z.string(),
-      sortby: z.string(),
-      max_comments: z.number()
+      video_id: z.string().regex(YOUTUBE_VIDEO_ID_REGEX, "Invalid YouTube video ID format"),
+      sortby: z.enum(VALID_SORT_OPTIONS, "sortby must be 'top' or 'newest'"),
+      max_comments: z.number().int().min(1).max(1000, "max_comments must not exceed 1000")
     }
   },
   async ({video_id, sortby, max_comments}) => ({
@@ -106,20 +121,46 @@ server.registerTool(
 )
 
 async function fetch_comments(video_id, sortby="top", max_comments=50) {
-  const command = `"${ytDlpPath}" --skip-download --write-comments --dump-json --extractor-args "youtube:comment_sort=${sortby};max_comments=${max_comments}" "${video_id}"`
-  const { stdout } = await execAsync(command, { maxBuffer: 10 * 1024 * 1024 }) // 10 MB
-  let jsondump = JSON.parse(stdout.trim())
-  let commentBlock = jsondump.comments
-  let commentParsed = ""
+  const args = [
+    '--skip-download',
+    '--write-comments',
+    '--dump-json',
+    '--extractor-args', `youtube:comment_sort=${sortby};max_comments=${max_comments}`,
+    video_id
+  ]
 
-  commentBlock.forEach(function (item) {
-    commentParsed += item.author + "\n" + item.text + "\n" + item.like_count + " likes\n"
-  })
+  try {
+    const { stdout } = await execFileAsync(ytDlpPath, args, { maxBuffer: 10 * 1024 * 1024 })
+    const trimmed = stdout.trim()
+    if (!trimmed) {
+      return "No comments available."
+    }
 
-  return commentParsed
+    let jsondump
+    try {
+      jsondump = JSON.parse(trimmed)
+    } catch (parseErr) {
+      return "Error parsing comments JSON: Invalid response from yt-dlp"
+    }
+
+    const commentBlock = jsondump.comments
+    if (!commentBlock || !Array.isArray(commentBlock)) {
+      return "No comments available."
+    }
+
+    let commentParsed = ""
+    commentBlock.forEach(function (item) {
+      commentParsed += (item.author || 'Unknown') + "\n" + (item.text || '') + "\n" + (item.like_count || 0) + " likes\n"
+    })
+
+    return commentParsed
+  } catch (err) {
+    if (err.stderr) {
+      console.error('yt-dlp stderr:', err.stderr)
+    }
+    return "Error fetching comments: " + (err.message || 'Unknown error occurred')
+  }
 }
-
-
 
 server.registerTool(
   "get-youtube-video-title-only",
@@ -127,7 +168,7 @@ server.registerTool(
     title: "Get Youtube Video Title",
     description: "Get the title of a youtube video",
     inputSchema: {
-      video_id: z.string()
+      video_id: z.string().regex(YOUTUBE_VIDEO_ID_REGEX, "Invalid YouTube video ID format")
     }
   },
   async ({video_id}) => ({
@@ -139,12 +180,18 @@ server.registerTool(
 )
 
 async function fetch_title(video_id) {
-  const command = `"${ytDlpPath}" --get-title "${video_id}"`
-  const { stdout } = await execAsync(command)
-  return stdout.trim()
+  const args = ['--get-title', video_id]
+
+  try {
+    const { stdout } = await execFileAsync(ytDlpPath, args, { maxBuffer: 10 * 1024 * 1024 })
+    return stdout.trim()
+  } catch (err) {
+    if (err.stderr) {
+      console.error('yt-dlp stderr:', err.stderr)
+    }
+    return "Error fetching title: " + (err.message || 'Unknown error occurred')
+  }
 }
-
-
 
 server.registerTool(
   "update-yt-dlp",
@@ -163,12 +210,15 @@ server.registerTool(
 )
 
 async function update_ytdlp() {
-  const command = `"${ytDlpPath}" --update`
-  const { stdout } = await execAsync(command)
-  return stdout.trim()
+  const args = ['--update']
+
+  try {
+    const { stdout } = await execFileAsync(ytDlpPath, args, { maxBuffer: 10 * 1024 * 1024 })
+    return stdout.trim()
+  } catch (err) {
+    return "Update failed: " + (err.message || 'Unknown error occurred')
+  }
 }
-
-
 
 server.registerTool(
   "initialize-yt-dlp",
@@ -205,13 +255,10 @@ async function initialize_ytdlp() {
   return `Downloaded ${filename} to ${ytDlpPath}`
 }
 
-
-
 function serve_stdio() {
   const transport = new StdioServerTransport()
   server.connect(transport)
 }
-
 
 function serve_http(port=12001) {
   const transport = new StreamableHTTPServerTransport({
@@ -286,4 +333,3 @@ if (mode === 'http') {
 } else {
   serve_stdio()
 }
-
