@@ -212,14 +212,26 @@ function serve_http(port=12001) {
   })
 
   const httpServer = http.createServer(async (req, res) => {
-    console.log(`${new Date().toISOString()} ${req.method} ${req.url}`)
+    const timestamp = new Date().toISOString()
     if (req.url === '/mcp' || req.url === '/mcp/') {
       let parsedBody
       if (['POST', 'PUT'].includes(req.method)) {
         parsedBody = await parseBody(req)
       }
+      if (parsedBody) {
+        const { method, params } = parsedBody
+        if (params && Object.keys(params).length > 0) {
+          const paramStr = Object.entries(params).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : JSON.stringify(v)}`).join(', ')
+          console.log(`${timestamp} ${method} {${paramStr}}`)
+        } else {
+          console.log(`${timestamp} ${method} (no params)`)
+        }
+      } else {
+        console.log(`${timestamp} ${req.method} ${req.url}`)
+      }
       await transport.handleRequest(req, res, parsedBody)
     } else {
+      console.log(`${timestamp} ${req.method} ${req.url}`)
       res.writeHead(404, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'Not found' }))
     }
@@ -228,7 +240,7 @@ function serve_http(port=12001) {
   server.connect(transport)
 
   httpServer.listen(port, () => {
-    console.log('MCP server listening on port 12001')
+    console.log('MCP server listening on port '+port)
   })
 }
 
