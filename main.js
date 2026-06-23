@@ -78,13 +78,14 @@ async function fetch_subtitle(video_id, lang="en") {
   if (!lrcFile) return "No transcript available."
 
   try {
+    const videoTitle = await fetch_title(video_id)
     let subtitleContent = await fs.readFile(path.join(outputDir, lrcFile), 'utf-8')
     subtitleContent = subtitleContent.replace(/\\h/g, '').replace(/>> /g, '')
     let lines = subtitleContent.split('\n')
 
     let seen = new Set()
     let final = []
-    final.push("title: " + lrcFile.slice(0, -7) + "\n\n")
+    final.push("title: " + videoTitle + "\n\n")
 
     lines.forEach((line) => {
       let text = line.split("]", 2)[1]
