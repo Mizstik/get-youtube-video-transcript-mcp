@@ -199,13 +199,63 @@ async function initialize_ytdlp() {
 
 
 
+function serve_stdio() {
+  const transport = new StdioServerTransport()
+  server.connect(transport)
+}
 
 
+function serve_http(port=12001) {
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  })
 
-const transport = new StdioServerTransport()
-server.connect(transport)
+  const httpServer = http.createServer(async (req, res) => {
+    console.log(`${new Date().toISOString()} ${req.method} ${req.url}`)
+    if (req.url === '/mcp' || req.url === '/mcp/') {
+      let parsedBody
+      if (['POST', 'PUT'].includes(req.method)) {
+        parsedBody = await parseBody(req)
+      }
+      await transport.handleRequest(req, res, parsedBody)
+    } else {
+      res.writeHead(404, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Not found' }))
+    }
+  })
 
+  server.connect(transport)
 
+  httpServer.listen(port, () => {
+    console.log('MCP server listening on port 12001')
+  })
+}
 
+function parseBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = ''
+    req.on('data', chunk => { data += chunk })
+    req.on('end', () => {
+      try {
+        resolve(data ? JSON.parse(data) : undefined)
+      } catch (e) {
+        reject(e)
+      }
+    })
+    req.on('error', reject)
+    })
+}
 
+// Argument parsing
+const args = process.argv.slice(2)
+const mode = args.includes('--http') ? 'http' : 'stdio'
+const portMatch = args.find(arg => arg.startsWith('--port='))
+const port = portMatch ? parseInt(portMatch.split('=')[1], 10) : 12001
+
+if (mode === 'http') {
+  serve_http(port)
+} else {
+  serve_stdio()
+}
 
