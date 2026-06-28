@@ -19,6 +19,98 @@ const YOUTUBE_VIDEO_ID_REGEX = /^[a-zA-Z0-9_-]{11}$/
 const VALID_SORT_OPTIONS = ['top', 'newest']
 const VALID_LANG_CODES = /^[a-zA-Z]{2,3}(-[a-zA-Z]{2,3})?$/
 
+// Stdio chunking constants
+const CACHE_DIR = path.join(__dirname, '.cache')
+const CACHE_TTL_MS = 10 * 60 * 1000  // 10 minutes
+const MAX_CHUNK_SIZE = 25 * 1024     // 25 KB raw text
+
+async function ensureCacheDir() {
+  try {
+    await fs.mkdir(CACHE_DIR, { recursive: true })
+  } catch (_) { /* ignore */ }
+}
+
+function getCachePath(video_id, lang) {
+  // Sanitize lang for filename
+  const safeLang = lang.replace(/[^a-zA-Z0-9_-]/g, '_')
+  return path.join(CACHE_DIR, `${video_id}_${safeLang}.json`)
+}
+
+async function readCache(cachePath) {
+  try {
+    const data = await fs.readFile(cachePath, 'utf-8')
+    const parsed = JSON.parse(data)
+    if (Date.now() - parsed.timestamp > CACHE_TTL_MS) {
+      await fs.unlink(cachePath)
+      return null
+    }
+    return parsed
+  } catch (_) {
+    return null
+  }
+}
+
+async function writeCache(cachePath, text) {
+  await fs.writeFile(cachePath, JSON.stringify({ text, timestamp: Date.now() }))
+}
+
+async function cleanCache() {
+  await ensureCacheDir()
+  try {
+    const files = await fs.readdir(CACHE_DIR)
+    for (const file of files) {
+      const fp = path.join(CACHE_DIR, file)
+      try {
+        const stat = await fs.stat(fp)
+        if (Date.now() - stat.mtimeMs > CACHE_TTL_MS) {
+          await fs.unlink(fp)
+        }
+      } catch (_) { /* skip */ }
+    }
+  } catch (_) { /* skip */ }
+}
+
+function splitIntoChunks(text, title) {
+  const prefix = (n, total) => `--- Part ${n}/${total} (video: ${title}) ---\n`
+  const chunks = []
+  let remaining = text
+
+  // Estimate total chunks
+  const estimatedTotal = Math.max(1, Math.ceil(text.length / MAX_CHUNK_SIZE))
+
+  let i = 1
+  while (remaining.length > 0) {
+    const p = prefix(i, estimatedTotal)
+    const available = MAX_CHUNK_SIZE - Buffer.byteLength(p)
+    if (remaining.length <= available) {
+      chunks.push(p + remaining)
+      remaining = ''
+    } else {
+      // Find a good split point within budget
+      let cut = available
+      // Try to split at a space to avoid cutting mid-word
+      while (cut > 0 && remaining[cut] !== ' ' && remaining[cut] !== '\n') {
+        cut--
+      }
+      if (cut === 0) cut = available // force split if no space found
+      chunks.push(p + remaining.slice(0, cut))
+      remaining = remaining.slice(cut).trimStart()
+    }
+    i++
+  }
+
+  // If we estimated wrong, fix the prefixes
+  if (estimatedTotal !== chunks.length) {
+    for (let c = 0; c < chunks.length; c++) {
+      const oldPrefix = `--- Part ${c + 1}/${estimatedTotal}`
+      const newPrefix = `--- Part ${c + 1}/${chunks.length}`
+      chunks[c] = chunks[c].replace(oldPrefix, newPrefix)
+    }
+  }
+
+  return chunks
+}
+
 function formatBytes(bytes) {
   if (bytes === 0) return '0 B'
   const k = 1024
@@ -29,26 +121,74 @@ function formatBytes(bytes) {
 
 const server = new McpServer({
   name: "Get Youtube Video Title and Subtitle",
-  version: "1.2.0"
+  version: "1.3.0"
 })
 
 server.registerTool(
   "get-youtube-video-transcript-and-title",
   {
     title: "Get Youtube Video Transcript and Title",
-    description: "Get transcript and title from a youtube video",
+    description: "Get transcript and title from a youtube video. In stdio mode, responses longer than 25 KB are split into chunks. If the response starts with '--- Part 1/', call this tool again with chunk=2, chunk=3, etc. to get the remaining parts.",
     inputSchema: {
       video_id: z.string().regex(YOUTUBE_VIDEO_ID_REGEX, "Invalid YouTube video ID format"),
-      lang: z.string().regex(VALID_LANG_CODES, "Invalid language code format")
+      lang: z.string().regex(VALID_LANG_CODES, "Invalid language code format"),
+      chunk: z.number().int().min(1).optional().default(1)
     }
   },
-  async ({video_id, lang}) => ({
-    content: [{
-      type: "text",
-      text: await fetch_subtitle(video_id, lang)
-    }]
-  })
+  async ({video_id, lang, chunk}) => {
+    if (mode === 'stdio') {
+      return await handle_chunked_subtitle(video_id, lang, chunk)
+    }
+    return {
+      content: [{
+        type: "text",
+        text: await fetch_subtitle(video_id, lang)
+      }]
+    }
+  }
 )
+
+async function handle_chunked_subtitle(video_id, lang, chunk) {
+  await ensureCacheDir()
+  const cachePath = getCachePath(video_id, lang)
+
+  // Try cache first
+  let cached = await readCache(cachePath)
+  if (cached) {
+    const fullText = cached.text
+    if (fullText.length <= MAX_CHUNK_SIZE) {
+      return { content: [{ type: "text", text: fullText }] }
+    }
+    const chunks = splitIntoChunks(fullText, video_id)
+    if (chunk > chunks.length) {
+      return { content: [{ type: "text", text: `Chunk ${chunk} out of range (1–${chunks.length} available).` }] }
+    }
+    return { content: [{ type: "text", text: chunks[chunk - 1] }] }
+  }
+
+  // Not cached — fetch full transcript
+  const fullText = await fetch_subtitle(video_id, lang)
+
+  // Don't cache errors
+  if (fullText.startsWith("Error") || fullText === "No transcript available.") {
+    return { content: [{ type: "text", text: fullText }] }
+  }
+
+  // Store in cache
+  await writeCache(cachePath, fullText)
+
+  // If short enough, return as-is
+  if (fullText.length <= MAX_CHUNK_SIZE) {
+    return { content: [{ type: "text", text: fullText }] }
+  }
+
+  // Split and return requested chunk
+  const chunks = splitIntoChunks(fullText, video_id)
+  if (chunk > chunks.length) {
+    return { content: [{ type: "text", text: `Chunk ${chunk} out of range (1–${chunks.length} available).` }] }
+  }
+  return { content: [{ type: "text", text: chunks[chunk - 1] }] }
+}
 
 async function fetch_subtitle(video_id, lang="en") {
   const outputDir = __dirname
@@ -256,7 +396,9 @@ async function initialize_ytdlp() {
   return `Downloaded ${filename} to ${ytDlpPath}`
 }
 
-function serve_stdio() {
+async function serve_stdio() {
+  // Clean expired cache entries on startup
+  await cleanCache()
   const transport = new StdioServerTransport()
   server.connect(transport)
 }

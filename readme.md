@@ -34,6 +34,14 @@ Some desktop frontends, like LM Studio, prefer MCPs with stdio transport. To add
 
 When main.js is executed with no command line arguments, it will operate in stdio mode. The LLM frontend will execute this for you automatically when needed and there is no resident process or server running.
 
+### Chunking
+In many frontends (including LM Studio and Hermes), if the response from MCP in stdio mode is too large, the frontend will arbitrarily cut off and put "truncated" at the end. This tends to happen at around 30 KB (or about 20-30 minutes of video depending on how fast the host speaks). To circumvent this, the MCP will chunk subtitles at 25 KB, and the agent will need to call the MCP again to obtain the rest. To do this, you may need to provide instructions to the agent either in the prompt, the context, or the skill. For example:
+
+```
+If the transcript starts with "Part 1/3" or similar, it means there are more transcript to fetch., in which case call the tool again with chunk: 2, or chunk: 3 or more as needed to fetch the rest of the subtitles until all parts are obtained.
+```
+As far as I know, this truncation does not happen when agents call the MCP in HTTP streamable mode (at least not with OpenWebUI and Hermes) and the agent can obtain the entire transcript in one call no matter how large it is.
+
 ## streamable http
 Some frontends, particularly server-based ones such as OpenWebUI, prefer MCPs with streamable http transport.
 
