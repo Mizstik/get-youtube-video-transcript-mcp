@@ -17,6 +17,11 @@ winget install ffmpeg
 ```
 ffmpeg is required in order to convert subtitles into a more compact format and for deduplication of subtitle lines. The MCP will not function without it.
 
+On linux, the yt-dlp executable requires python 3.10 or newer.
+```
+sudo apt install python3.10
+```
+
 ## stdio transport
 Some desktop frontends, like LM Studio, prefer MCPs with stdio transport. To add this MCP to the frontend, add the following to the MCP config file. (In LMS, this is "Edit mcp.json" in the Integration sidebar, in the Install button.)
 
