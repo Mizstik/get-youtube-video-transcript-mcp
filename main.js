@@ -201,6 +201,7 @@ async function fetch_subtitle(video_id, lang="en") {
     '--sub-langs', lang,
     '--convert-subs', 'lrc',
     '-o', safeOutputPath,
+    '--',
     video_id
   ]
 
