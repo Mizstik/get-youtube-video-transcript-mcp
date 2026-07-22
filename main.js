@@ -268,6 +268,7 @@ async function fetch_comments(video_id, sortby="top", max_comments=50) {
     '--write-comments',
     '--dump-json',
     '--extractor-args', `youtube:comment_sort=${sortby};max_comments=${max_comments}`,
+    '--',
     video_id
   ]
 
