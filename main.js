@@ -323,7 +323,7 @@ server.registerTool(
 )
 
 async function fetch_title(video_id) {
-  const args = ['--get-title', video_id]
+  const args = ['--get-title', '--', video_id]
 
   try {
     const { stdout } = await execFileAsync(ytDlpPath, args, { maxBuffer: 10 * 1024 * 1024 })
