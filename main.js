@@ -128,7 +128,7 @@ server.registerTool(
   "get-youtube-video-transcript-and-title",
   {
     title: "Get Youtube Video Transcript and Title",
-    description: "Get transcript and title from a youtube video. In stdio mode, responses longer than 25 KB are split into chunks. If the response starts with '--- Part 1/', call this tool again with chunk=2, chunk=3, etc. to get the remaining parts.",
+    description: "Get transcript and title from a youtube video. In stdio mode, responses longer than 15 KB are split into chunks. If the response starts with '--- Part 1/', call this tool again with chunk=2, chunk=3, etc. to get the remaining parts.",
     inputSchema: {
       video_id: z.string().regex(YOUTUBE_VIDEO_ID_REGEX, "Invalid YouTube video ID format"),
       lang: z.string().regex(VALID_LANG_CODES, "Invalid language code format"),
