@@ -22,7 +22,7 @@ const VALID_LANG_CODES = /^[a-zA-Z]{2,3}(-[a-zA-Z]{2,3})?$/
 // Stdio chunking constants
 const CACHE_DIR = path.join(__dirname, '.cache')
 const CACHE_TTL_MS = 10 * 60 * 1000  // 10 minutes
-const MAX_CHUNK_SIZE = 25 * 1024     // 25 KB raw text
+const MAX_CHUNK_SIZE = 15000     // reduced to 15k for Unsloth which truncates at 16k
 
 async function ensureCacheDir() {
   try {
