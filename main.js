@@ -262,7 +262,7 @@ server.registerTool(
   })
 )
 
-async function fetch_comments(video_id, sortby="top", max_comments=50) {
+async function fetch_comments(video_id, sortby="top", max_comments=30) {
   const args = [
     '--skip-download',
     '--write-comments',
