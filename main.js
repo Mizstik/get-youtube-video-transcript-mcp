@@ -194,19 +194,21 @@ async function fetch_subtitle(video_id, lang="en") {
   const outputDir = __dirname
   const safeOutputPath = path.join(outputDir, '%(id)s.%(ext)s')
 
-  const args = [
+  const ytdlpArgs = [
     '--skip-download',
     '--write-subs',
     '--write-auto-subs',
     '--sub-langs', lang,
     '--convert-subs', 'lrc',
     '-o', safeOutputPath,
-    '--',
-    video_id
   ]
+  if (ytdlpCookiesFromBrowser) {
+    ytdlpArgs.push('--cookies-from-browser', ytdlpCookiesFromBrowser)
+  }
+  ytdlpArgs.push('--', video_id)
 
   try {
-    await execFileAsync(ytDlpPath, args, { maxBuffer: 10 * 1024 * 1024 })
+    await execFileAsync(ytDlpPath, ytdlpArgs, { maxBuffer: 10 * 1024 * 1024 })
   } catch (err) {
     if (err.stderr) {
       console.error('yt-dlp stderr:', err.stderr)
@@ -263,17 +265,19 @@ server.registerTool(
 )
 
 async function fetch_comments(video_id, sortby="top", max_comments=30) {
-  const args = [
+  const ytdlpArgs = [
     '--skip-download',
     '--write-comments',
     '--dump-json',
     '--extractor-args', `youtube:comment_sort=${sortby};max_comments=${max_comments}`,
-    '--',
-    video_id
   ]
+  if (ytdlpCookiesFromBrowser) {
+    ytdlpArgs.push('--cookies-from-browser', ytdlpCookiesFromBrowser)
+  }
+  ytdlpArgs.push('--', video_id)
 
   try {
-    const { stdout } = await execFileAsync(ytDlpPath, args, { maxBuffer: 10 * 1024 * 1024 })
+    const { stdout } = await execFileAsync(ytDlpPath, ytdlpArgs, { maxBuffer: 10 * 1024 * 1024 })
     const trimmed = stdout.trim()
     if (!trimmed) {
       return "No comments available."
@@ -323,10 +327,14 @@ server.registerTool(
 )
 
 async function fetch_title(video_id) {
-  const args = ['--get-title', '--', video_id]
+  const ytdlpArgs = ['--get-title']
+  if (ytdlpCookiesFromBrowser) {
+    ytdlpArgs.push('--cookies-from-browser', ytdlpCookiesFromBrowser)
+  }
+  ytdlpArgs.push('--', video_id)
 
   try {
-    const { stdout } = await execFileAsync(ytDlpPath, args, { maxBuffer: 10 * 1024 * 1024 })
+    const { stdout } = await execFileAsync(ytDlpPath, ytdlpArgs, { maxBuffer: 10 * 1024 * 1024 })
     return stdout.trim()
   } catch (err) {
     if (err.stderr) {
@@ -472,6 +480,18 @@ const args = process.argv.slice(2)
 const mode = args.includes('--http') ? 'http' : 'stdio'
 const portMatch = args.find(arg => arg.startsWith('--port='))
 const port = portMatch ? parseInt(portMatch.split('=')[1], 10) : 12001
+
+// Extract cookies-from-browser option for yt-dlp
+let ytdlpCookiesFromBrowser = null
+const cookiesMatch = args.find(arg => arg.startsWith('--cookies-from-browser='))
+if (cookiesMatch) {
+  ytdlpCookiesFromBrowser = cookiesMatch.split('=')[1]
+} else if (args.includes('--cookies-from-browser')) {
+  const idx = args.indexOf('--cookies-from-browser')
+  if (idx + 1 < args.length) {
+    ytdlpCookiesFromBrowser = args[idx + 1]
+  }
+}
 
 if (mode === 'http') {
   serve_http(port)
