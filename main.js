@@ -9,7 +9,6 @@ const execFileAsync = promisify(execFile)
 import path from "path"
 import { fileURLToPath } from 'url'
 import os from "os"
-import crypto from "crypto"
 import fs from "fs/promises"
 import http from "http"
 
@@ -461,7 +460,7 @@ let activeHttpServer = null
 
 function serve_http(port) {
   const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: () => crypto.randomUUID(),
+    sessionIdGenerator: undefined,
     enableJsonResponse: true,
   })
 
