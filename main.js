@@ -9,29 +9,63 @@ const execFileAsync = promisify(execFile)
 import path from "path"
 import { fileURLToPath } from 'url'
 import os from "os"
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const ytDlpPath = path.join(__dirname, os.platform() === 'win32' ? 'yt-dlp.exe' : 'yt-dlp')
-
+import crypto from "crypto"
 import fs from "fs/promises"
 import http from "http"
+
+// ── Configuration (defaults, overridable via CLI) ────────────────────────────
+const config = {
+  name: "Get Youtube Video Title and Subtitle",
+  version: "1.4.0",
+  defaultPort: 12001,
+  chunkSizeBytes: 15000,      // max bytes per stdio chunk (~15 KB)
+  cacheTtlMs: 10 * 60 * 1000, // 10 minutes
+}
+
+// ── Runtime constants (derived from CLI args) ────────────────────────────────
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const ytDlpPath = path.join(__dirname, os.platform() === 'win32' ? 'yt-dlp.exe' : 'yt-dlp')
 
 const YOUTUBE_VIDEO_ID_REGEX = /^[a-zA-Z0-9_-]{11}$/
 const VALID_SORT_OPTIONS = ['top', 'newest']
 const VALID_LANG_CODES = /^[a-zA-Z]{2,3}(-[a-zA-Z]{2,3})?$/
 
-// Stdio chunking constants
+// ── CLI argument parsing ─────────────────────────────────────────────────────
+const args = process.argv.slice(2)
+const mode = args.includes('--http') ? 'http' : 'stdio'
+const portMatch = args.find(arg => arg.startsWith('--port='))
+const port = portMatch ? parseInt(portMatch.split('=')[1], 10) : config.defaultPort
+
+// Extract --chunk-size=N (bytes). Accepts plain number or suffix (KB/MB).
+let cliChunkSize = null
+const chunkSizeMatch = args.find(arg => arg.startsWith('--chunk-size='))
+if (chunkSizeMatch) {
+  const raw = chunkSizeMatch.split('=')[1].trim().toUpperCase()
+  const multiplier = raw.endsWith('KB') ? 1024 : raw.endsWith('MB') ? 1024 * 1024 : 1
+  cliChunkSize = parseInt(raw.replace(/KB|MB$/, ''), 10) * multiplier
+}
+const CHUNK_SIZE = cliChunkSize ?? config.chunkSizeBytes
+
+// Extract cookies-from-browser option for yt-dlp
+let ytdlpCookiesFromBrowser = null
+const cookiesMatch = args.find(arg => arg.startsWith('--cookies-from-browser='))
+if (cookiesMatch) {
+  ytdlpCookiesFromBrowser = cookiesMatch.split('=')[1]
+} else if (args.includes('--cookies-from-browser')) {
+  const idx = args.indexOf('--cookies-from-browser')
+  if (idx + 1 < args.length) {
+    ytdlpCookiesFromBrowser = args[idx + 1]
+  }
+}
+
+// ── Cache helpers ────────────────────────────────────────────────────────────
 const CACHE_DIR = path.join(__dirname, '.cache')
-const CACHE_TTL_MS = 10 * 60 * 1000  // 10 minutes
-const MAX_CHUNK_SIZE = 15000     // reduced to 15k for Unsloth which truncates at 16k
 
 async function ensureCacheDir() {
-  try {
-    await fs.mkdir(CACHE_DIR, { recursive: true })
-  } catch (_) { /* ignore */ }
+  try { await fs.mkdir(CACHE_DIR, { recursive: true }) } catch (_) { /* ignore */ }
 }
 
 function getCachePath(video_id, lang) {
-  // Sanitize lang for filename
   const safeLang = lang.replace(/[^a-zA-Z0-9_-]/g, '_')
   return path.join(CACHE_DIR, `${video_id}_${safeLang}.json`)
 }
@@ -40,14 +74,12 @@ async function readCache(cachePath) {
   try {
     const data = await fs.readFile(cachePath, 'utf-8')
     const parsed = JSON.parse(data)
-    if (Date.now() - parsed.timestamp > CACHE_TTL_MS) {
+    if (Date.now() - parsed.timestamp > config.cacheTtlMs) {
       await fs.unlink(cachePath)
       return null
     }
     return parsed
-  } catch (_) {
-    return null
-  }
+  } catch (_) { return null }
 }
 
 async function writeCache(cachePath, text) {
@@ -62,7 +94,7 @@ async function cleanCache() {
       const fp = path.join(CACHE_DIR, file)
       try {
         const stat = await fs.stat(fp)
-        if (Date.now() - stat.mtimeMs > CACHE_TTL_MS) {
+        if (Date.now() - stat.mtimeMs > config.cacheTtlMs) {
           await fs.unlink(fp)
         }
       } catch (_) { /* skip */ }
@@ -70,36 +102,43 @@ async function cleanCache() {
   } catch (_) { /* skip */ }
 }
 
+// ── Temp directory per yt-dlp call (avoids race conditions & dir pollution) ──
+async function createTempDir(video_id) {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'yt-transcript-'))
+  return {
+    dir: tmp,
+    cleanup: async () => { try { await fs.rm(tmp, { recursive: true, force: true }) } catch (_) {} },
+  }
+}
+
+// ── Chunking helpers ─────────────────────────────────────────────────────────
 function splitIntoChunks(text, title) {
   const prefix = (n, total) => `--- Part ${n}/${total} (video: ${title}) ---\n`
   const chunks = []
   let remaining = text
 
-  // Estimate total chunks
-  const estimatedTotal = Math.max(1, Math.ceil(text.length / MAX_CHUNK_SIZE))
+  const estimatedTotal = Math.max(1, Math.ceil(text.length / CHUNK_SIZE))
 
   let i = 1
   while (remaining.length > 0) {
     const p = prefix(i, estimatedTotal)
-    const available = MAX_CHUNK_SIZE - Buffer.byteLength(p)
+    const available = CHUNK_SIZE - Buffer.byteLength(p)
     if (remaining.length <= available) {
       chunks.push(p + remaining)
       remaining = ''
     } else {
-      // Find a good split point within budget
       let cut = available
-      // Try to split at a space to avoid cutting mid-word
       while (cut > 0 && remaining[cut] !== ' ' && remaining[cut] !== '\n') {
         cut--
       }
-      if (cut === 0) cut = available // force split if no space found
+      if (cut === 0) cut = available
       chunks.push(p + remaining.slice(0, cut))
       remaining = remaining.slice(cut).trimStart()
     }
     i++
   }
 
-  // If we estimated wrong, fix the prefixes
+  // Fix prefixes if estimate was wrong
   if (estimatedTotal !== chunks.length) {
     for (let c = 0; c < chunks.length; c++) {
       const oldPrefix = `--- Part ${c + 1}/${estimatedTotal}`
@@ -119,16 +158,53 @@ function formatBytes(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
 }
 
+// ── LRC parser that preserves timestamps and newlines ────────────────────────
+function parseLrcToTimestampedText(lrcContent) {
+  const lines = lrcContent.split('\n')
+  const result = []
+  const seenText = new Set()
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+
+    // Extract timestamp from [MM:SS.xx] or similar, then the text
+    const tsMatch = trimmed.match(/^\[(\d+):(\d+)\.?\d*\](.*)/)
+    if (tsMatch) {
+      const minutes = parseInt(tsMatch[1], 10)
+      const seconds = parseInt(tsMatch[2], 10)
+      const textPart = tsMatch[3].trim()
+
+      // Format timestamp as [M:SS] or [MM:SS]
+      const displayMin = minutes < 10 ? String(minutes) : String(minutes).padStart(2, '0')
+      const displaySec = seconds < 10 ? `0${seconds}` : String(seconds)
+      const tsStr = `[${displayMin}:${displaySec}]`
+
+      // Deduplicate by text content only (auto-captions often repeat with tiny timing diffs)
+      if (!seenText.has(textPart)) {
+        seenText.add(textPart)
+        result.push(`${tsStr} ${textPart}`)
+      }
+    } else if (!trimmed.startsWith('title:')) {
+      // Lines without timestamp (e.g. title line or stray content) — keep as-is
+      result.push(trimmed)
+    }
+  }
+
+  return result.join('\n')
+}
+
+// ── MCP server ───────────────────────────────────────────────────────────────
 const server = new McpServer({
-  name: "Get Youtube Video Title and Subtitle",
-  version: "1.3.0"
+  name: config.name,
+  version: config.version,
 })
 
 server.registerTool(
   "get-youtube-video-transcript-and-title",
   {
     title: "Get Youtube Video Transcript and Title",
-    description: "Get transcript and title from a youtube video. In stdio mode, responses longer than 15 KB are split into chunks. If the response starts with '--- Part 1/', call this tool again with chunk=2, chunk=3, etc. to get the remaining parts.",
+    description: `Get transcript with timestamps and title from a youtube video. In stdio mode, responses longer than ${Math.round(CHUNK_SIZE / 1024)} KB are split into chunks. If the response starts with '--- Part 1/', call this tool again with chunk=2, chunk=3, etc. to get the remaining parts.`,
     inputSchema: {
       video_id: z.string().regex(YOUTUBE_VIDEO_ID_REGEX, "Invalid YouTube video ID format"),
       lang: z.string().regex(VALID_LANG_CODES, "Invalid language code format"),
@@ -156,12 +232,12 @@ async function handle_chunked_subtitle(video_id, lang, chunk) {
   let cached = await readCache(cachePath)
   if (cached) {
     const fullText = cached.text
-    if (fullText.length <= MAX_CHUNK_SIZE) {
+    if (fullText.length <= CHUNK_SIZE) {
       return { content: [{ type: "text", text: fullText }] }
     }
     const chunks = splitIntoChunks(fullText, video_id)
     if (chunk > chunks.length) {
-      return { content: [{ type: "text", text: `Chunk ${chunk} out of range (1–${chunks.length} available).` }] }
+      return { content: [{ type: "text", text: `Chunk ${chunk} out of range (1-${chunks.length} available).` }] }
     }
     return { content: [{ type: "text", text: chunks[chunk - 1] }] }
   }
@@ -178,70 +254,60 @@ async function handle_chunked_subtitle(video_id, lang, chunk) {
   await writeCache(cachePath, fullText)
 
   // If short enough, return as-is
-  if (fullText.length <= MAX_CHUNK_SIZE) {
+  if (fullText.length <= CHUNK_SIZE) {
     return { content: [{ type: "text", text: fullText }] }
   }
 
   // Split and return requested chunk
   const chunks = splitIntoChunks(fullText, video_id)
   if (chunk > chunks.length) {
-    return { content: [{ type: "text", text: `Chunk ${chunk} out of range (1–${chunks.length} available).` }] }
+    return { content: [{ type: "text", text: `Chunk ${chunk} out of range (1-${chunks.length} available).` }] }
   }
   return { content: [{ type: "text", text: chunks[chunk - 1] }] }
 }
 
-async function fetch_subtitle(video_id, lang="en") {
-  const outputDir = __dirname
-  const safeOutputPath = path.join(outputDir, '%(id)s.%(ext)s')
-
-  const ytdlpArgs = [
-    '--skip-download',
-    '--write-subs',
-    '--write-auto-subs',
-    '--sub-langs', lang,
-    '--convert-subs', 'lrc',
-    '-o', safeOutputPath,
-  ]
-  if (ytdlpCookiesFromBrowser) {
-    ytdlpArgs.push('--cookies-from-browser', ytdlpCookiesFromBrowser)
-  }
-  ytdlpArgs.push('--', video_id)
+async function fetch_subtitle(video_id, lang = "en") {
+  const tempDir = await createTempDir(video_id)
 
   try {
-    await execFileAsync(ytDlpPath, ytdlpArgs, { maxBuffer: 10 * 1024 * 1024 })
-  } catch (err) {
-    if (err.stderr) {
-      console.error('yt-dlp stderr:', err.stderr)
+    const safeOutputPath = path.join(tempDir.dir, '%(id)s.%(ext)s')
+
+    const ytdlpArgs = [
+      '--skip-download',
+      '--write-subs',
+      '--write-auto-subs',
+      '--sub-langs', lang,
+      '--convert-subs', 'lrc',
+      '-o', safeOutputPath,
+    ]
+    if (ytdlpCookiesFromBrowser) {
+      ytdlpArgs.push('--cookies-from-browser', ytdlpCookiesFromBrowser)
     }
-    return "Error fetching subtitle: " + (err.message || 'Unknown error occurred')
-  }
+    ytdlpArgs.push('--', video_id)
 
-  const files = await fs.readdir(outputDir)
-  const lrcFile = files.find(file => file.endsWith('.lrc'))
-  if (!lrcFile) return "No transcript available."
+    try {
+      await execFileAsync(ytDlpPath, ytdlpArgs, { maxBuffer: 10 * 1024 * 1024 })
+    } catch (err) {
+      // Suppress stderr by default — yt-dlp emits warnings that aren't actionable
+      return "Error fetching subtitle: " + (err.message || 'Unknown error occurred')
+    }
 
-  try {
-    const videoTitle = await fetch_title(video_id)
-    let subtitleContent = await fs.readFile(path.join(outputDir, lrcFile), 'utf-8')
-    subtitleContent = subtitleContent.replace(/\\h/g, '').replace(/>> /g, '')
-    let lines = subtitleContent.split('\n')
+    const files = await fs.readdir(tempDir.dir)
+    const lrcFile = files.find(file => file.endsWith('.lrc'))
+    if (!lrcFile) return "No transcript available."
 
-    let seen = new Set()
-    let final = []
-    final.push("title: " + videoTitle + "\n\n")
+    try {
+      const videoTitle = await fetch_title(video_id)
+      let subtitleContent = await fs.readFile(path.join(tempDir.dir, lrcFile), 'utf-8')
 
-    lines.forEach((line) => {
-      let text = line.split("]", 2)[1]
-      if (!seen.has(text)) {
-        seen.add(text)
-        final.push(line)
-      }
-    })
-
-    await fs.unlink(path.join(outputDir, lrcFile))
-    return final.join(' ')
-  } catch (err) {
-    return "Error reading subtitle: " + (err.message || 'Unknown error occurred')
+      // Preserve timestamps and newlines instead of flattening to a single line
+      const timestampedText = parseLrcToTimestampedText(subtitleContent)
+      return `title: ${videoTitle}\n\n${timestampedText}`
+    } catch (err) {
+      return "Error reading subtitle: " + (err.message || 'Unknown error occurred')
+    }
+  } finally {
+    await tempDir.cleanup()
   }
 }
 
@@ -264,31 +330,31 @@ server.registerTool(
   })
 )
 
-async function fetch_comments(video_id, sortby="top", max_comments=30) {
-  const ytdlpArgs = [
-    '--skip-download',
-    '--write-comments',
-    '--print', 'comments',
-    '--extractor-args', `youtube:comment_sort=${sortby};max_comments=${max_comments}`,
-  ]
-  if (ytdlpCookiesFromBrowser) {
-    ytdlpArgs.push('--cookies-from-browser', ytdlpCookiesFromBrowser)
-  }
-  ytdlpArgs.push('--', video_id)
+async function fetch_comments(video_id, sortby = "top", max_comments = 30) {
+  const tempDir = await createTempDir(video_id)
 
   try {
-    const { stdout } = await execFileAsync(ytDlpPath, ytdlpArgs, { maxBuffer: 10 * 1024 * 1024 })
-    const trimmed = stdout.trim()
-    if (!trimmed) {
-      return "No comments available."
+    const ytdlpArgs = [
+      '--skip-download',
+      '--write-comments',
+      '--print', 'comments',
+      '--extractor-args', `youtube:comment_sort=${sortby};max_comments=${max_comments}`,
+    ]
+    if (ytdlpCookiesFromBrowser) {
+      ytdlpArgs.push('--cookies-from-browser', ytdlpCookiesFromBrowser)
     }
+    ytdlpArgs.push('--', video_id)
 
-    return trimmed
-  } catch (err) {
-    if (err.stderr) {
-      console.error('yt-dlp stderr:', err.stderr)
+    try {
+      const { stdout } = await execFileAsync(ytDlpPath, ytdlpArgs, { maxBuffer: 10 * 1024 * 1024 })
+      const trimmed = stdout.trim()
+      return trimmed || "No comments available."
+    } catch (err) {
+      // Suppress stderr by default
+      return "Error fetching comments: " + (err.message || 'Unknown error occurred')
     }
-    return "Error fetching comments: " + (err.message || 'Unknown error occurred')
+  } finally {
+    await tempDir.cleanup()
   }
 }
 
@@ -320,9 +386,7 @@ async function fetch_title(video_id) {
     const { stdout } = await execFileAsync(ytDlpPath, ytdlpArgs, { maxBuffer: 10 * 1024 * 1024 })
     return stdout.trim()
   } catch (err) {
-    if (err.stderr) {
-      console.error('yt-dlp stderr:', err.stderr)
-    }
+    // Suppress stderr by default
     return "Error fetching title: " + (err.message || 'Unknown error occurred')
   }
 }
@@ -332,8 +396,6 @@ server.registerTool(
   {
     title: "Update yt-dlp",
     description: "Update the underlying yt-dlp executable.",
-    inputSchema: {
-    }
   },
   async () => ({
     content: [{
@@ -359,8 +421,6 @@ server.registerTool(
   {
     title: "Initialize yt-dlp",
     description: "Download the yt-dlp executable during first use.",
-    inputSchema: {
-    }
   },
   async () => ({
     content: [{
@@ -389,16 +449,19 @@ async function initialize_ytdlp() {
   return `Downloaded ${filename} to ${ytDlpPath}`
 }
 
+// ── Stdio transport ──────────────────────────────────────────────────────────
 async function serve_stdio() {
-  // Clean expired cache entries on startup
   await cleanCache()
   const transport = new StdioServerTransport()
   server.connect(transport)
 }
 
-function serve_http(port=12001) {
+// ── HTTP transport ───────────────────────────────────────────────────────────
+let activeHttpServer = null
+
+function serve_http(port) {
   const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: undefined,
+    sessionIdGenerator: () => crypto.randomUUID(),
     enableJsonResponse: true,
   })
 
@@ -412,7 +475,7 @@ function serve_http(port=12001) {
       if (parsedBody) {
         const { method, params } = parsedBody
         if (params && Object.keys(params).length > 0) {
-          const paramStr = Object.entries(params).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : JSON.stringify(v)}`).join(', ')
+          const paramStr = Object.entries(params).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`).join(', ')
           console.log(`${timestamp} ${method} {${paramStr}}`)
         } else {
           console.log(`${timestamp} ${method} (no params)`)
@@ -439,8 +502,10 @@ function serve_http(port=12001) {
   server.connect(transport)
 
   httpServer.listen(port, () => {
-    console.log('MCP server listening on port '+port)
+    console.log('MCP server listening on port ' + port)
   })
+
+  activeHttpServer = httpServer
 }
 
 function parseBody(req) {
@@ -455,27 +520,28 @@ function parseBody(req) {
       }
     })
     req.on('error', reject)
-    })
+  })
 }
 
-// Argument parsing
-const args = process.argv.slice(2)
-const mode = args.includes('--http') ? 'http' : 'stdio'
-const portMatch = args.find(arg => arg.startsWith('--port='))
-const port = portMatch ? parseInt(portMatch.split('=')[1], 10) : 12001
-
-// Extract cookies-from-browser option for yt-dlp
-let ytdlpCookiesFromBrowser = null
-const cookiesMatch = args.find(arg => arg.startsWith('--cookies-from-browser='))
-if (cookiesMatch) {
-  ytdlpCookiesFromBrowser = cookiesMatch.split('=')[1]
-} else if (args.includes('--cookies-from-browser')) {
-  const idx = args.indexOf('--cookies-from-browser')
-  if (idx + 1 < args.length) {
-    ytdlpCookiesFromBrowser = args[idx + 1]
+// ── Graceful shutdown ────────────────────────────────────────────────────────
+function gracefulShutdown() {
+  console.log('\nShutting down...')
+  if (activeHttpServer) {
+    activeHttpServer.close(() => {
+      console.log('HTTP server closed.')
+      process.exit(0)
+    })
+    // Force close after 5 seconds
+    setTimeout(() => process.exit(0), 5000)
+  } else {
+    process.exit(0)
   }
 }
 
+process.on('SIGINT', gracefulShutdown)
+process.on('SIGTERM', gracefulShutdown)
+
+// ── Start server ─────────────────────────────────────────────────────────────
 if (mode === 'http') {
   serve_http(port)
 } else {

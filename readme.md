@@ -15,11 +15,24 @@ You also need ffmpeg on the same system where this MCP will run:
 ```
 winget install ffmpeg
 ```
-ffmpeg is required in order to convert subtitles into a more compact format and for deduplication of subtitle lines. The MCP will not function without it.
+ffmpeg is required in order to convert subtitles into LRC format for compaction. The MCP will not function without it.
 
 On linux, the yt-dlp executable requires python 3.10 or newer.
 ```
 sudo apt install python3.10
+```
+
+## Command-line options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--http` | (stdio) | Enable HTTP streamable transport mode |
+| `--port=N` | `12001` | Port to listen on (only in HTTP mode) |
+| `--chunk-size=N` | `15360` (~15 KB) | Max bytes per stdio chunk. Accepts suffixes: `KB`, `MB` (e.g. `--chunk-size=25KB`) |
+
+Example with custom chunk size:
+```
+node main.js --chunk-size=25KB
 ```
 
 ## stdio transport
@@ -35,7 +48,7 @@ Some desktop frontends, like LM Studio, prefer MCPs with stdio transport. To add
 When main.js is executed with no command line arguments, it will operate in stdio mode. The LLM frontend will execute this for you automatically when needed and there is no resident process or server running.
 
 ### Chunking
-In many frontends (including LM Studio and Hermes), if the response from MCP in stdio mode is too large, the frontend will arbitrarily cut off and put "truncated" at the end. This tends to happen at around 30 KB (or about 20-30 minutes of video depending on how fast the host speaks). To circumvent this, the MCP will chunk subtitles at 25 KB, and the agent will need to call the MCP again to obtain the rest. To do this, you may need to provide instructions to the agent either in the prompt, the context, or the skill. For example:
+In many frontends (including LM Studio and Hermes), if the response from MCP in stdio mode is too large, the frontend will arbitrarily cut off and put "truncated" at the end. This tends to happen at around 30 KB (or about 20-30 minutes of video depending on how fast the host speaks). To circumvent this, the MCP will chunk subtitles at the configured size (default ~15 KB, adjustable via `--chunk-size`). The agent will need to call the MCP again to obtain the rest. To do this, you may need to provide instructions to the agent either in the prompt, the context, or the skill. For example:
 
 ```
 If the transcript starts with "Part 1/3" or similar, it means there are more transcript to fetch., in which case call the tool again with chunk: 2, or chunk: 3 or more as needed to fetch the rest of the subtitles until all parts are obtained.
