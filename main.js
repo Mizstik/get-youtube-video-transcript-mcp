@@ -283,24 +283,7 @@ async function fetch_comments(video_id, sortby="top", max_comments=30) {
       return "No comments available."
     }
 
-    let jsondump
-    try {
-      jsondump = JSON.parse(trimmed)
-    } catch (parseErr) {
-      return "Error parsing comments JSON: Invalid response from yt-dlp"
-    }
-
-    const commentBlock = jsondump.comments
-    if (!commentBlock || !Array.isArray(commentBlock)) {
-      return "No comments available."
-    }
-
-    let commentParsed = ""
-    commentBlock.forEach(function (item) {
-      commentParsed += (item.author || 'Unknown') + "\n" + (item.text || '') + "\n" + (item.like_count || 0) + " likes\n"
-    })
-
-    return commentParsed
+    return trimmed
   } catch (err) {
     if (err.stderr) {
       console.error('yt-dlp stderr:', err.stderr)
