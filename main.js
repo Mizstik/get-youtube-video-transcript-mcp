@@ -268,7 +268,7 @@ async function fetch_comments(video_id, sortby="top", max_comments=30) {
   const ytdlpArgs = [
     '--skip-download',
     '--write-comments',
-    '--dump-json',
+    '--print', 'comments',
     '--extractor-args', `youtube:comment_sort=${sortby};max_comments=${max_comments}`,
   ]
   if (ytdlpCookiesFromBrowser) {
