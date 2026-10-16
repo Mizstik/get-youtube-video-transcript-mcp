@@ -1,5 +1,7 @@
 # get-youtube-video-transcript-mcp
 
+**NOTE:** If you have been experiencing a lot of 429 (Too many requests) error especially on auto-generated subtitles (despite not actually hitting it many times at all), you can try out my new [headless browser](https://github.com/Mizstik/get-youtube-transcript-with-headless-browser-mcp) version of this MCP.
+
 This is an MCP server which grabs transcripts/subtitles as well as the title from YouTube videos using yt-dlp.
 
 This version has merged both the stdio and http-streamable transports into one codebase, selectable by command-line.
